@@ -1,1 +1,212 @@
 TEST
+
+
+abstract class Models_Managers_Abstract {
+    
+    protected $filters = array(),
+            
+              $params  = array();
+    
+    public function filter($key, $op = '=', $val = null, $type = 'AND') {
+        
+        $args = func_get_args();
+
+        switch(func_num_args()) {
+            
+            # custom sql 
+            case 1:
+                $this->filters[$key][] = compact('type');
+                break;
+            
+            # normal operand
+            case 2:
+                $val = $op;
+                $this->filters[$key][] = array('op' => '=') + compact('op', 'val', 'type');
+                break;
+            
+            default:
+                $this->filters[$key][] = compact('op', 'val', 'type');
+                
+        }
+
+        return $this;
+    }
+    
+    public function or_filter($key, $op = '=', $val = null) {
+        $this->filter($key, $op, $val, 'OR');
+        
+        return $this;
+    }
+    
+    public function condition($conditions = array()) {
+        
+    }
+    
+    public function compile() {
+
+        $sql = array();
+        foreach($this->filters as $col => $f) {
+                
+            # group it
+            if (sizeof($f) > 1) {
+                
+                $t1 = $f[0]['type'];
+                $t2 = array();
+
+                # unset it
+                $f[0]['type'] = null;
+                
+                foreach($f as $k => $data) {
+
+                    $t2[] = "{$col} {$data['op']} ? " . (isset($f[$k + 1]['type']) ? $f[$k + 1]['type'] : '');
+                    $this->params[] = $data['val'];
+                }
+                
+                $t1 .= ' (' . join(' ', $t2) . ')';
+                
+                $sql[] = $t1;
+            }
+            
+            # single condition
+            else {
+                
+                $data = $f[0];
+                $sql[] = "{$data['type']} {$col} {$data['op']} ?";
+                $this->params[] = $data['val'];
+            }
+
+        }
+        
+        echo join(' ', $sql);
+        # p($this->filters);
+        p($this->params);
+
+    }
+    
+    public function parse_condition($conditions = array()) {
+        
+        # recusive styles (find alternate way without recursive
+        $conds = $params = array();
+        
+        foreach($conditions as $type => $data) {
+
+            # for numeric key
+            if (is_numeric($type)) {
+
+                $conds[]  = "{$data[0]} $data[1] ?";
+                $params[] = $data[2];
+            }
+
+            # for 'boolean' e.g. AND, OR
+            else {
+                list($c, $p) = call_user_func(array($this, 'parse_condition'), $data);
+                $conds[] = '(' . join(" $type ", $c) . ')';
+                $params  = array_merge($params, $p);
+            }
+        }
+
+        return array($conds, $params);
+    }
+    
+    public function parse_param() {
+        
+    }
+    
+    /**
+     *
+     * @param type $conditions 
+     */
+    public function find($conditions = array()) {
+
+        p($this->parse_condition($conditions));
+        return $this;
+    }
+    
+    public function indexed() {
+        $this->find();
+    }
+
+    public function threaded() {
+        
+    }
+    
+    public function neighbors() {
+        
+    }
+    
+    public function count() {
+        
+    }
+}
+
+class BC extends Models_Managers_Abstract {
+    
+}
+
+$a = new BC;
+//$a->filter('username', 'kung')
+//  ->filter('key', 'yes')
+//  ->or_filter('key', '=', 'ma')
+//  ->filter('key', 'bac')
+//  ->filter('date_published', '>', '23')
+//  ->or_filter('firstname', 'LIKE', 'a%');
+
+//$a->find(array(
+//    'OR' => array(
+//        array('test', '=', 'test'),
+//        array('test', '=', 'test'),
+//    ),
+//    'AND' => array(
+//        array('email', '=', 'marut@landaureece.com'),
+//    ),
+//));
+
+
+function test_find_2($conditions) {
+
+    $conds = array();
+    $level = 0;
+    while(list($type, $data) = each($conditions)) {
+        
+        if ($level > 0) {
+            echo '(';
+        }
+        
+        echo ' [type: ', $type, '] ';
+        if (is_numeric($type)) {
+            echo "{$data[0]} $data[1] ?";
+        }
+        
+        else {
+            $level++;
+            $conditions = $data;
+        }
+        
+        if ($level > 0) {
+            echo ')';
+        }
+    }
+    
+    p($conds);
+    die;
+}
+
+$condition = array(
+   array('User.firstname', '=', 'marut'),
+   'OR' => array(
+      array('Company.name', '=', 'Future Holdings'),
+      array('Company.city', '=', 'CA'),
+      'AND' => array(
+          array('Company.postcode', '=', '10234'),
+          array('Company.postcode', '=', '10234'),
+      )
+   ),
+   'AND' => array(
+       array('User.name', '=', 'Kung'),
+   ),
+   'AND' => array(
+       array('User.id', 'IN', '1234')
+   ),
+);
+
+$a->find($condition);
