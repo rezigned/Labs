@@ -210,3 +210,312 @@ $condition = array(
 );
 
 $a->find($condition);
+
+
+class Nobify_Router_Route {
+    
+    public $REG_OPTIONAL  = '|\(([^:]*):([^\)]+)\)|',
+           $REG_TRAILING  = '[^/]*',
+           $REG_DELIMETER = '|',
+           $REG_DYNAMIC   = '|:([\w-]+)|',
+           $REG_FORMAT    = '|(?\.:format\)?|',
+           $REG_NORMALIZE_NAME = '|[^\w+-]+|',
+           $PART_FORMAT   = '(.:format)';
+           
+    public $routes = array(),
+           $routes_names    = array(),
+           $match  = array(),
+           $default_options = array(
+               'controller'  => null,
+               'route'  => null,
+               'route_regex'       => null,
+               'route_with_format' => null,
+               'module' => 'default',
+               'name'   => null,
+               'format' => true,
+               'method' => array('GET', 'POST', 'PUT', 'DELETE', 'HEAD'),
+           );
+    
+    public $resource_routes = array(
+        array(
+            '',
+            '#index',
+            'method' => 'GET'
+        ),
+        array(
+            '',
+            '#create',
+            'method' => 'POST',
+        ),
+        array(
+            '/new',
+            '#new',
+            'method' => 'GET',
+        ),
+        array(
+            '/:id/edit', 
+            '#edit',
+            'method' => 'GET',
+        ),
+        array(
+            '/:id',
+            '#show',
+            'method' => 'GET',
+        ),
+        array(
+            '/:id', 
+            '#update',
+            'method' => 'PUT',
+        ),
+        array(
+            '/:id', 
+            '#destroy',
+            'method' => 'DELETE',
+        ),
+    );
+    /**
+     * Convert route string to regular expression
+     * 
+     * @param type $route
+     * @param type $options
+     * @return type 
+     * 
+     * (:controller(/:action))
+     */
+    protected function route_to_regex($route, &$options = array()) {
+
+        $routes   = array();
+        $replaces = array();
+        
+        # convert optional part (id) to non-capturing sub group (?:id)
+        $route    = str_replace(array('(', '.'), array('(?:', '\.'), $route);
+        
+        # dynamic part exists? e.g. :id, :user
+        if (strpos($route, ':') !== FALSE) {
+            
+            # find all dynamic part
+            preg_match_all($this->REG_DYNAMIC, $route, $matches);
+            
+            if ($matches) {
+                
+                # matches[0] include `:`  e.g. `:id`
+                # matches[1] didn't include `:` e.g. `id`
+                $parts = $matches[1];
+
+                foreach($parts as $part) {
+
+                    $rule = $this->REG_TRAILING;
+
+                    # constraint exists?
+                    if (isset($options['constraints'][$part]))
+                        $rule = $options['constraints'][$part];
+
+                    $part = '(?P<' . $part . '>' . $rule . ')';
+                    $replaces[] = $part;
+                }
+
+                $options['matched_parts'] = $parts;
+                return str_replace($matches[0], $replaces, $route) . '?';
+            }
+        }
+        
+        return $route;
+    }
+
+    /**
+     * Register a route
+     * 
+     * @param string       $routes      route style
+     * @param string|array $controller  controller name or route option array
+     * 
+     * @example
+        
+         add('sessions/login', 'Session#login'
+         add('users(.:format)', '
+        'sessions/login'      => 'User#login',
+        'sessions/(.:format)' => 'User#logout',
+
+        'dashboard/:user/account/orders/:id' => array(
+            'User#method',
+            'constraints' => array(
+                ':user' => '\w+',
+            ),
+        )
+     * 
+     */
+    public function add($route, $controller) {
+
+        $parsed_routes = array();
+        $options       = array();
+
+        # handle options
+        if (is_array($controller)) {
+
+            $options    = $controller;
+            $controller = $options[0];
+            
+            # normalize request method i.e. convert to all caps
+            $options['method'] = array_map('strtoupper', (array)$options['method']);
+        }
+
+        $options = $options + $this->default_options;
+        
+        # normalize route name
+        if (!$options['name'])
+            $options['name'] = str_replace('_format', '', trim(preg_replace($this->REG_NORMALIZE_NAME, '_', $route), '_'));
+        
+        # automatic append ':format'
+        $route_with_format = $route;
+        
+        if ($options['format'] && strpos($route, ':format') === FALSE)
+            $route_with_format .= $this->PART_FORMAT;
+        
+        # merge new values
+        $parsed_routes = array(
+            'controller'  => $controller,
+            'route'       => $route,
+            'route_regex'       => $this->route_to_regex($route_with_format, $options),
+            'route_with_format' => $route_with_format,
+        ) + $options;
+
+        # for reverse url lookup
+        $this->routes_names[$options['name']][] = sizeof($this->routes);
+        $this->routes[] = $parsed_routes;   
+    }
+    
+    /**
+     * Add RESTful resource 
+     * 
+     * @param type $resource
+     * @param type $options   only allow some options e.g. 'constraints'
+     */
+    public function add_resource($resource, $options = array()) {
+        
+        foreach($this->resource_routes as $r) {
+            
+            # set default options for controller and http method
+            $opts = array(
+                $resource . $r[1],
+                'method' => $r['method']
+            );
+            
+            $this->add($resource . $r[0], $opts + $options);
+        }
+    }
+    
+    /**
+     * Match given uri with existing routes
+     * 
+     * @param type $uri 
+     * @example
+     *     match('account/signup')
+     */
+    public function match($uri) {
+
+        $params = array();
+        $match  = array();
+        $method = $_SERVER['REQUEST_METHOD'];
+        
+        # hidden input take more precedence
+        if (isset($_REQUEST['_method']) and $_method = strtoupper($_REQUEST['_method']) 
+                                        and in_array($_method, $this->default_options['method'])) {
+            $method = $_method;
+        }
+                                        
+        foreach($this->routes as $k => $r) {
+            
+            # filter out non-matched method (save regex overhead)
+            if (!in_array($method, $r['method']))
+                continue;
+
+            if (preg_match('|^' . $r['route_regex'] . '$|', $uri, $matches)) {
+
+                # merge params
+                $params = array_slice($matches, 1);
+                $match  = $r;
+                break;
+            }
+        }
+
+        # validate 
+        if ($match) {
+            $match['params'] = $params;
+        }
+        
+        $match['uri'] = $uri;
+
+        return $this->match = $match;
+    }
+    
+    /**
+     * Reverse url for named route
+     * 
+     * @param  string $name
+     * @param  array  $params
+     * @return string
+     * @example 
+     *     
+     *     $this->url('posts', array('id' => 5)) => 'posts/5'
+     *     $this->url('posts', array('id' => 5, 'format' => 'xml')) => 'posts/5.xml'
+     */
+    public function url($name, $params = array()) {
+        
+        $r = array();
+        
+        # get matched route
+        foreach($this->routes_names[$name] as $id) {
+            if (isset($this->routes[$id])) {
+                $r = $this->routes[$id];
+                break;
+            }
+        }
+
+        # reverse vars
+        $route    = $r['route_with_format'];
+        $parts    = $r['matched_parts'];        
+        $searches = $replaces = array();
+        
+        foreach($parts as $key) {
+
+            # if param doesn't exist we use `null` as default value
+            if (isset($params[$key]))
+                $val = $params[$key];
+            else
+                $val = null;
+            
+            # prepend ':' to key
+            $key = ':' . $key;
+            
+            # is there an optional part e.g. (.:format) we have to do an extra work here.
+            if (strpos($route, $key . ')') !== FALSE) {
+                
+                # grap the whole dynamic part include `(,)`
+                preg_match('|\(([^:]*)' . $key . '\)|', $route, $match);
+                
+                if ($match) {
+                    
+                    # replace key with dynamic part style
+                    $key = $match[0];
+                    
+                    # prepend any extra char e.g. '.', '/' if exists
+                    if (isset($val, $match[1]))
+                        $val = $match[1] . $val;
+                }
+            }
+            
+            # add search part 
+            $searches[] = $key;
+            $replaces[] = $val;
+        }
+        
+        # lookup for :host, :port params
+        
+        # convert unknown :key to query string
+        $qs = '';
+        if ($diff = array_diff_key($params, array_flip($parts))) {
+            $qs = '?' . str_replace('%3A', '', http_build_query($diff));
+        }
+
+        return str_replace($searches, $replaces, $route) . $qs;
+    }
+}
